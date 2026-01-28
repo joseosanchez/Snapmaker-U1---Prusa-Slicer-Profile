@@ -16,6 +16,8 @@ Prevent PrusaSlicer from collapsing all tools into a single extruder
 
 Eliminate unnecessary M109 waits caused by cold standby nozzles
 
+I have not played yet with enabling timelapses, I will work on that in the following weeks.
+
 ✅ What This Profile Fixes
 
 Out of the box, PrusaSlicer can exhibit the following issues on the Snapmaker U1:
@@ -70,10 +72,10 @@ Open PrusaSlicer
 
 Go to:
 
-File → Import → Import Config Bundle
+File → Import → Import Config 
 
 
-Import the provided .ini / config bundle
+Import the provided .ini / config file
 
 Select the Snapmaker U1 printer profile
 
