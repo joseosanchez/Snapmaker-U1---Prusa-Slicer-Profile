@@ -8,51 +8,19 @@ The goal of this profile is to allow PrusaSlicer users to:
 
 Use all 4 hotends correctly
 
-Avoid long tool-change long pauses
+Avoid long tool-change long pauses - uses a post processing script to add a preheat sequence for the extruders
 
 Run Snapmaker’s native purge / pre-extrude routines
 
-Prevent PrusaSlicer from collapsing all tools into a single extruder
-
-Eliminate unnecessary M109 waits caused by cold standby nozzles
-
 I have not played yet with enabling timelapses, I will work on that in the following weeks.
 
-✅ What This Profile Fixes
+What’s Included
 
-Out of the box, PrusaSlicer can exhibit the following issues on the Snapmaker U1:
-
-Long pauses during tool changes due to cold standby temps
-
-Behavior that works in OrcaSlicer but not in PrusaSlicer
-
-This profile addresses those issues by:
-
-Configuring true multi-extruder (toolchanger) mode
-
-Using Snapmaker’s SM_PRINT_PREEXTRUDE_FILAMENT macro on tool change
-
-Preventing extruders from being cooled to 0–80 °C mid-print
-
-Preheating only the extruders that are actually used in the model
-
-Using non-blocking temperature commands (M104) where appropriate
-
-🧰 What’s Included
-
-📄 PrusaSlicer Printer Profile for Snapmaker U1 (4 extruders)
-
-🔁 Custom Tool-change G-code with Snapmaker purge routine
-
-🔥 Start G-code that:
-
-Preheats only used extruders
-
-Avoids long temperature waits
-
-Logs progress to Fluidd using RESPOND
-
-📘 This README
+- PrusaSlicer Printer Profile for Snapmaker U1 (4 extruders)
+- Custom Tool-change G-code with Snapmaker purge routine
+- Logs progress to Fluidd using RESPOND
+- Post processing python script to preheat extruders prior to use to avoid delays.
+- This README
 
 ⚙️ Requirements
 
@@ -60,7 +28,7 @@ Printer: Snapmaker U1 (4 hotends)
 
 Firmware: Snapmaker Klipper-based firmware (stock)
 
-Slicer: PrusaSlicer (tested on recent versions)
+Slicer: PrusaSlicer 2.9.4 or later (tested on recent versions)
 
 Interface: Fluidd (recommended for debugging/log visibility)
 
@@ -74,7 +42,6 @@ Go to:
 
 File → Import → Import Config 
 
-
 Import the provided .ini / config file
 
 Select the Snapmaker U1 printer profile
@@ -87,24 +54,40 @@ Single Extruder Multi Material (MMU) = OFF
 
 Tool change G-code is present
 
-No extruder shutdown (M104 S0) in Start G-code
+Snapmaker Multi-Tool Dynamic Preheat Script
+This Python script is a post-processing tool designed for multi-extruder 3D printers (specifically tested on the Snapmaker U1). It solves the issue of the printer idling at a tool change while waiting for the next nozzle to reach printing temperature.
 
-🔥 Start G-code Highlights (What Makes This Work)
-Preheats only the extruders actually used in the print:
-{if is_extruder_used[0]} M104 T0 S{first_layer_temperature[0]} {endif}
-{if is_extruder_used[1]} M104 T1 S{first_layer_temperature[1]} {endif}
-{if is_extruder_used[2]} M104 T2 S{first_layer_temperature[2]} {endif}
-{if is_extruder_used[3]} M104 T3 S{first_layer_temperature[3]} {endif}
+Key Features
+Temporal Look-ahead: Instead of counting lines of G-code, the script calculates the actual printing time (including retractions) to start heating exactly X seconds before the tool is needed.
 
-Tool-change routine runs Snapmaker’s native purge:
-T{next_extruder}
-SM_PRINT_PREEXTRUDE_FILAMENT INDEX={next_extruder}
+Filament-Specific Temperatures: Automatically extracts the correct printing temperature for the next tool (PLA, PETG, TPU, etc.) and ignores low "standby" temperatures.
 
-No unnecessary waiting on tool changes
+Thumbnail Protection: Intelligent markers ensure the script never corrupts G-code thumbnail data.
 
-Uses M104 instead of M109
+First-Layer Compensation: Includes an acceleration scalar to improve timing accuracy during slow first-layer movements.
 
-Relies on preheat + purge time to reach target temp
+Installation
+Download preheat_script.py and save it to a permanent folder on your computer.
+
+Ensure you have Python 3 installed.
+
+In your Start G-code in PrusaSlicer, make sure the following comment is at the very end of your routine:
+
+G-Code
+;----- End Start_gcode ------
+This acts as a safety anchor for the script.
+
+PrusaSlicer Setup
+To enable the script, follow these steps in PrusaSlicer:
+
+Go to Print Settings -> Output options.
+
+In the Post-processing scripts text box, enter the path to your Python executable followed by the path to the script and your desired preheat time in seconds.
+
+Example Format: "C:\Path\To\python.exe" "C:\Path\To\preheat_script.py" 40;
+
+The 40 at the end tells the script to start heating 40 seconds before the tool change. Adjust this based on your heater's speed.
+
 
 🧪 Debugging & Verification
 
@@ -124,20 +107,7 @@ If you see:
 long pauses at tool change → standby temps too low
 
 no purge routine → tool change G-code not applied
-
-⚠️ Important Notes
-
-This profile intentionally avoids cooling unused extruders to 0 °C
-
-Standby temperatures should be kept close to printing temperature
-
-Example (PLA):
-
-Active: 220–230 °C
-
-Standby: 190–200 °C
-
-Excessive ooze should be managed with retraction, not extreme cooldown
+The script also creates a log in the same directory where the scrip is located.
 
 🧩 Known Limitations
 
