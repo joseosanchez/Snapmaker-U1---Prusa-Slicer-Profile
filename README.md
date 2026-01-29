@@ -84,6 +84,8 @@ Go to Print Settings -> Output options.
 
 In the Post-processing scripts text box, enter the path to your Python executable followed by the path to the script and your desired preheat time in seconds.
 
+The Command Pattern: "PATH_TO_PYTHON" "PATH_TO_SCRIPT" PREHEAT_TIME;
+
 Example Format: "C:\Path\To\python.exe" "C:\Path\To\preheat_script.py" 40;
 
 The 40 at the end tells the script to start heating 40 seconds before the tool change. Adjust this based on your heater's speed.
