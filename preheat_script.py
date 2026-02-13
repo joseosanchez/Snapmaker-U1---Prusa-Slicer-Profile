@@ -22,12 +22,12 @@ import os
 import math
 
 def get_move_time(line, last_x, last_y, last_e, current_f):
-    """Calculates time for G1 moves with acceleration compensation."""
+    """Simple but accurate time calculation."""
     x_match = re.search(r'X([-+]?\d*\.\d+|\d+)', line)
     y_match = re.search(r'Y([-+]?\d*\.\d+|\d+)', line)
     e_match = re.search(r'E([-+]?\d*\.\d+|\d+)', line)
     f_match = re.search(r'F(\d+)', line)
-
+    
     new_f = float(f_match.group(1)) if f_match else current_f
     new_x = float(x_match.group(1)) if x_match else last_x
     new_y = float(y_match.group(1)) if y_match else last_y
@@ -38,84 +38,100 @@ def get_move_time(line, last_x, last_y, last_e, current_f):
     actual_dist = dist_xy if dist_xy > 0 else dist_e
     
     speed_mm_s = new_f / 60.0
-    move_time = (actual_dist / speed_mm_s) if speed_mm_s > 0 else 0
-    
-    # ACCELERATION COMPENSATION: Slow moves take ~25% longer
-    if speed_mm_s < 30 and actual_dist > 0:
-        move_time *= 1.25 
-    
-    return move_time, new_x, new_y, new_e, new_f
+    return (actual_dist / speed_mm_s) if speed_mm_s > 0 else 0, new_x, new_y, new_e, new_f
 
 def process_gcode(file_path, target_preheat_time):
     try:
         with open(file_path, 'r', encoding="utf-8") as f:
             lines = f.readlines()
 
+        line_times = [0.0] * len(lines)
+        lx, ly, le, cf = 0.0, 0.0, 0.0, 1200.0
+        toolchange_events = []
+        
+        # PASS 1: Find Toolchanges and Map Time
+        for i in range(len(lines)):
+            line = lines[i]
+            if line.startswith("G1") or line.startswith("G0"):
+                t, lx, ly, le, cf = get_move_time(line, lx, ly, le, cf)
+                line_times[i] = t
+            
+            # Look for the specific Prusa block
+            if "; CP TOOLCHANGE START" in line:
+                target_tool, target_temp = None, None
+                # Look ahead for the M109 command in the next 50 lines
+                for j in range(i, min(i + 50, len(lines))):
+                    tm = re.search(r'M109 S(\d+) (T\d+)', lines[j])
+                    if tm:
+                        target_temp, target_tool = tm.group(1), tm.group(2)
+                        break
+                if target_tool:
+                    toolchange_events.append({'idx': i, 'tool': target_tool, 'temp': target_temp})
+
+        # PASS 2: Insert Preheats & Inhibit Cooldowns
         new_lines = []
+        last_tool_usage = {}
         can_process = False
-        lx, ly, le, cf = 0.0, 0.0, 0.0, 1200.0 
+        tc_ptr = 0
 
         for i in range(len(lines)):
             line = lines[i]
-
-            if "End Start_gcode" in line:
+            
+            if ";----- End Start_gcode ------" in line:
                 can_process = True
 
-            if can_process and "; CP TOOLCHANGE START" in line:
-                target_tool, target_temp = None, "220"
+            # Track usage to prevent preheating while tool is still busy
+            t_usage = re.search(r'\b(T\d+)\b', line)
+            if t_usage and not line.startswith(';'):
+                last_tool_usage[t_usage.group(1)] = len(new_lines)
+
+            # COOLDOWN INHIBITION
+            # If we see a cooldown (S < 150), check if the next use of that tool is too soon
+            if ("M104" in line or "M109" in line) and "S" in line:
+                sm = re.search(r'S(\d+)', line)
+                tm = re.search(r'(T\d+)', line)
+                if sm and tm and int(sm.group(1)) < 150:
+                    this_tool = tm.group(1)
+                    # Find when this tool is needed next
+                    next_tc = next((tc for tc in toolchange_events if tc['idx'] > i and tc['tool'] == this_tool), None)
+                    if next_tc:
+                        # Calculate time gap
+                        gap_time = sum(line_times[i:next_tc['idx']])
+                        if gap_time < (target_preheat_time + 10):
+                            line = f"; Inhibited Cooldown (Needed in {round(gap_time,1)}s): " + line
+
+            # PREHEAT INSERTION
+            if can_process and tc_ptr < len(toolchange_events) and i == toolchange_events[tc_ptr]['idx']:
+                tc = toolchange_events[tc_ptr]
+                preheat_cmd = f"M104 S{tc['temp']} {tc['tool']} ; {target_preheat_time}s preheat\n"
                 
-                # Search ahead for the REAL printing temperature
-                for j in range(i, min(i + 500, len(lines))):
-                    # 1. Identify the tool being switched TO
-                    tool_match = re.search(r'T(\d+)', lines[j])
-                    if not tool_match:
-                        tool_match = re.search(r'; Tool\d -> Tool(\d)', lines[j])
-                    
-                    if tool_match: 
-                        target_tool = f"T{tool_match.group(1)}"
-                    
-                    # 2. Find the M104 temp for this tool
-                    if target_tool:
-                        temp_match = re.search(r'M104 S(\d+) ' + target_tool, lines[j])
-                        if temp_match:
-                            found_temp = int(temp_match.group(1))
-                            # IGNORE temps below 150C (which are standby/soften temps)
-                            if found_temp > 150:
-                                target_temp = str(found_temp)
-                                break
+                accum_time = 0.0
+                insert_idx = len(new_lines)
+                floor = last_tool_usage.get(tc['tool'], 0)
+                
+                # Look back for the preheat start point
+                for k in range(len(new_lines)-1, -1, -1):
+                    if ";----- End Start_gcode ------" in new_lines[k] or k <= floor:
+                        break
+                    accum_time += line_times[k] if k < len(line_times) else 0
+                    insert_idx = k
+                    if accum_time >= target_preheat_time:
+                        break
+                
+                new_lines.insert(insert_idx, preheat_cmd)
+                tc_ptr += 1
 
-                if target_tool:
-                    preheat_cmd = f"M104 S{target_temp} {target_tool} ; {target_preheat_time}s preheat\n"
-                    accum_time, insert_idx, marker_idx = 0.0, len(new_lines), 0
-                    blx, bly, ble, bcf = lx, ly, le, cf
-                    
-                    for k in range(len(new_lines)-1, -1, -1):
-                        prev = new_lines[k]
-                        if "End Start_gcode" in prev:
-                            marker_idx = k + 1
-                            break
-                        if prev.startswith("G1"):
-                            t, blx, bly, ble, bcf = get_move_time(prev, blx, bly, ble, bcf)
-                            accum_time += t
-                        insert_idx = k
-                        if accum_time >= target_preheat_time: break
-                    
-                    new_lines.insert(max(marker_idx, insert_idx), preheat_cmd)
-
-            if line.startswith("G1"):
-                _, lx, ly, le, cf = get_move_time(line, lx, ly, le, cf)
             new_lines.append(line)
 
         with open(file_path, 'w', encoding="utf-8") as f:
             f.writelines(new_lines)
-    except Exception:
+    except Exception as e:
+        print(f"Error: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":
-    gcode_file = next((arg for arg in sys.argv[1:] if os.path.isfile(arg)), None)
-    try:
-        seconds = int(next((arg for arg in sys.argv[1:] if arg.isdigit()), 40))
-    except:
-        seconds = 40
-    if gcode_file:
-        process_gcode(gcode_file, seconds)
+    gfile = next((arg for arg in sys.argv[1:] if os.path.isfile(arg)), None)
+    secs = 40
+    for arg in sys.argv:
+        if arg.isdigit(): secs = int(arg)
+    if gfile: process_gcode(gfile, secs)
